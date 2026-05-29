@@ -5,6 +5,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   DEBIAN_FRONTEND: noninteractive
+
 jobs:
   build:
     strategy:
@@ -13,72 +14,113 @@ jobs:
         include:
           - name: linux-x86_64
             os: Linux
-            runs-on: ubuntu-22.04
-            container: ubuntu:20.04
-          - name: linux-arm64
-            runs-on: ubuntu-24.04-arm
-          - name: macos-arm64
-            os: macOS
-            runs-on: macos-latest
-          - name: macos-x86_64
-            os: macOS
-            runs-on: macos-13
-          - name: windows-x86_64
-            os: Windows
-            runs-on: windows-2022
+            runs-on: ubuntu-24.04
 
     name: Build on ${{ matrix.name }}
     runs-on: ${{ matrix.runs-on }}
     container: ${{ matrix.container }}
     steps:
-      - name: Install newer Git
-        if: matrix.name == 'linux-x86_64'
-        run: |
-          apt-get update
-          apt-get install -y git curl sudo wget
       - uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
-          toolchain: nightly
+          toolchain: stable
 
-      - uses: Swatinem/rust-cache@v2
+      - name: Install rustfmt
+        shell: bash
+        run: rustup component add rustfmt
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Purge existing CUDA / NVIDIA packages
+        shell: bash
+        run: |
+          sudo apt-get remove --purge -y \
+            'cuda*' \
+            'libcuda*' \
+            'libnvidia*' \
+            'nvidia-cuda*' \
+            'libcublas*' \
+            'libcufft*' \
+            'libcurand*' \
+            'libcusolver*' \
+            'libcusparse*' \
+            'libnvjpeg*' \
+            'libnpp*' || true
+          sudo apt-get autoremove -y
+          sudo apt-get autoclean -y
+          sudo rm -rf \
+            /usr/local/cuda* \
+            /usr/lib/x86_64-linux-gnu/libcuda* \
+            /usr/lib/x86_64-linux-gnu/libcublas* \
+            /etc/apt/sources.list.d/cuda* \
+            /etc/apt/sources.list.d/nvidia*
+          sudo apt-get update
+
+      - name: Add NVIDIA CUDA repository (Linux x86_64)
+        if: matrix.name == 'linux-x86_64'
+        shell: bash
+        run: |
+          CUDA_REPO_URL="https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64"
+          wget -q "${CUDA_REPO_URL}/cuda-keyring_1.1-1_all.deb"
+          sudo dpkg -i cuda-keyring_1.1-1_all.deb
+          sudo apt-get update
+
+      - name: Install CUDA 13.2 (Linux x86_64)
+        if: matrix.name == 'linux-x86_64'
+        shell: bash
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            cuda-13-2 \
+            cuda-libraries-dev-13-2 \
+            libcublas-13-2 libcublas13-dev-cuda-13 \
+            cudnn9-cuda-13 libcudnn9-dev-cuda-13 \
+            libnccl2 libnccl-dev
+
+      - name: Add CUDA to PATH and LD_LIBRARY_PATH (Linux x86_64)
+        if: matrix.name == 'linux-x86_64'
+        shell: bash
+        run: |
+          CUDA_PATH=/usr/local/cuda-13.2
+          echo "CUDA_HOME=$CUDA_PATH"  >> "$GITHUB_ENV"
+          echo "CUDA_PATH=$CUDA_PATH"  >> "$GITHUB_ENV"
+          echo "$CUDA_PATH/bin"        >> "$GITHUB_PATH"
+          echo "LD_LIBRARY_PATH=$CUDA_PATH/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+
+      - name: Verify CUDA installation (Linux x86_64)
+        if: matrix.name == 'linux-x86_64'
+        shell: bash
+        run: |
+          nvcc --version
+          echo "CUDA_HOME=$CUDA_HOME"
+          ldconfig -p | grep -E "cudnn|nccl|cudart" | head
+          dpkg -l | grep -E 'cuda|cublas|cudnn'
 
       - name: Install dependencies (Linux x86_64)
         if: matrix.name == 'linux-x86_64'
         run: |
-          # cuda,cudnn
-          export DEBIAN_FRONTEND=noninteractive
-          export TZ=Etc/UTC
-          apt install cmake build-essential gcc dirmngr ca-certificates software-properties-common apt-transport-https dkms curl -y
-          #curl -fSsL https://developer.download.nvidia.com/compute/cuda/repos/debian11/x86_64/3bf863cc.pub | sudo gpg --dearmor | sudo tee /usr/share/keyrings/nvidia-drivers.gpg > /dev/null 2>&1
-          #echo 'deb [signed-by=/usr/share/keyrings/nvidia-drivers.gpg] https://developer.download.nvidia.com/compute/cuda/repos/debian11/x86_64/ /' | sudo tee /etc/apt/sources.list.d/nvidia-drivers.list
-          wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2004/x86_64/cuda-keyring_1.1-1_all.deb
-          sudo dpkg -i cuda-keyring_1.1-1_all.deb
-          apt update
-          apt install -y cuda-12-9 cudnn9
-          apt install -y libopenmpi-dev openmpi-bin
-          apt install -y libnccl2 libnccl-dev
-          echo "CUDA_PATH=/usr/local/cuda" >> $GITHUB_ENV
-          echo "CUDA_ROOT=/usr/local/cuda" >> $GITHUB_ENV
-          echo "CUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda" >> $GITHUB_ENV
-          echo "CUDNN_LIB=/usr/lib/x86_64-linux-gnu" >> $GITHUB_ENV
-          echo "PATH=/usr/local/cuda/bin:$PATH" >> $GITHUB_ENV
-          echo "LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH" >> $GITHUB_ENV
+          sudo apt-get install -y --no-install-recommends \
+            gpg-agent wget \
+            build-essential dirmngr ca-certificates dkms \
+            libopenmpi-dev openmpi-bin \
+
           # mkl
-          wget https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS-2023.PUB
-          sudo apt-key add GPG-PUB-KEY-INTEL-SW-PRODUCTS-2023.PUB
-          sudo sh -c 'echo deb https://apt.repos.intel.com/mkl all main > /etc/apt/sources.list.d/intel-mkl.list'
-          apt-get update
-          apt-get install -y intel-mkl-64bit-2020.4-912
-          echo "LD_LIBRARY_PATH=/opt/intel/lib/intel64:$LD_LIBRARY_PATH" >> $GITHUB_ENV
+          wget -O- https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB | gpg --dearmor | sudo tee /usr/share/keyrings/oneapi-archive-keyring.gpg > /dev/null
+          echo "deb [signed-by=/usr/share/keyrings/oneapi-archive-keyring.gpg] https://apt.repos.intel.com/oneapi all main" | sudo tee /etc/apt/sources.list.d/oneAPI.list
+          sudo apt-get update
+          sudo apt-get install -y intel-oneapi-mkl-classic intel-oneapi-mkl-classic-devel
+          echo "LD_LIBRARY_PATH=/opt/intel/lib/intel64:$LD_LIBRARY_PATH" >> "$GITHUB_ENV"
+
           # hack
           file=CTranslate2/include/ctranslate2/devices.h
           if ! grep -q '#include <stdint.h>' "$file"; then
             sed -i '0,/^#pragma once/ s|^#pragma once|#pragma once\n#include <stdint.h>|' "$file"
           fi
+
       - name: Install dependencies (Linux arm64)
         if: matrix.name == 'linux-arm64'
         run: |
@@ -96,6 +138,7 @@ jobs:
       # - name: Install dependencies (MacOS ARM64)
       #   if: matrix.name == 'macos-arm64'
       #   run: |
+
       - name: Install dependencies (MacOS x86_64)
         if: matrix.name == 'macos-x86_64'
         run: |
@@ -113,6 +156,7 @@ jobs:
             -replace 'MultiThreaded\$\<\$\<CONFIG:Debug\>:Debug\>', 'MultiThreaded$<$<CONFIG:Debug>:Debug>DLL' `
             -replace '/MT', '/MD' |
             Set-Content CTranslate2/CMakeLists.txt
+
       - name: Install Intel MKL and OpenMP packages
         if: matrix.name == 'windows-x86_64'
         run: |
@@ -176,6 +220,26 @@ jobs:
           rm cudnn.exe
           echo "CUDA_TOOLKIT_ROOT_DIR=$CUDA_ROOT" >> $GITHUB_ENV
 
+      - name: Clean APT cache
+        if: matrix.name == 'linux-x86_64' || matrix.name == 'linux-arm64'
+        shell: bash
+        run: sudo rm -r /var/cache/apt/archives/*
+
+      - name: Check free space
+        if: matrix.name == 'linux-x86_64' || matrix.name == 'linux-arm64'
+        shell: bash
+        run: df -h
+
+      - name: Check swap space
+        if: matrix.name == 'linux-x86_64' || matrix.name == 'linux-arm64'
+        shell: bash
+        run: swapon --show
+
+      - name: Check RAM
+        if: matrix.name == 'linux-x86_64' || matrix.name == 'linux-arm64'
+        shell: bash
+        run: free -m
+
       - name: List
         if: matrix.name == 'windows-x86_64'
         run: |
@@ -195,6 +259,7 @@ jobs:
         with:
           name: static-${{ matrix.name }}
           path: target/release/vendored.tar.gz
+
       - name: Upload bundle(MacOS)
         if: matrix.name == 'macos-x86_64'
         uses: actions/upload-artifact@v4
@@ -203,6 +268,7 @@ jobs:
           path: |
             /opt/intel/oneapi/mkl/2023.2.0/lib
             /opt/intel/oneapi/compiler/2023.2.0/mac/compiler/lib/libiomp5.dylib
+
       - name: Upload bundle(Linux)
         if: matrix.name == 'linux-arm64'
         uses: actions/upload-artifact@v4
@@ -210,6 +276,7 @@ jobs:
           name: dyn-${{ matrix.name }}
           path: |
             /opt/OpenBLAS/lib/libopenblas.a
+
       - name: Upload bundle(Linux)
         if: matrix.name == 'linux-x86_64'
         uses: actions/upload-artifact@v4
@@ -227,6 +294,7 @@ jobs:
           name: dyn-${{ matrix.name }}
           path: |
             intelmkl.static.win-x64/build/native/lib
+
       - name: Upload bundle(Windows)
         if: matrix.name == 'windows-x86_64'
         uses: actions/upload-artifact@v4
