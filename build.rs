@@ -76,7 +76,7 @@ fn build_dnnl() {
     }
 
     let dst = Config::new(source_dir)
-        .define("CMAKE_POLICY_VERSION_MINIMUM", "3.5")
+        .define("CMAKE_POLICY_VERSION_MINIMUM", "3.7")
         .define("ONEDNN_LIBRARY_TYPE", "STATIC")
         .define("ONEDNN_BUILD_EXAMPLES", "OFF")
         .define("ONEDNN_BUILD_TESTS", "OFF")
@@ -354,7 +354,7 @@ fn main() {
             let cuda = cuda_root().expect("CUDA_TOOLKIT_ROOT_DIR is not specified");
             cmake.define("WITH_CUDA", "ON");
             cmake.define("CUDA_TOOLKIT_ROOT_DIR", &cuda);
-            cmake.define("CUDA_ARCHITECTURES", "89-real 90-real 120");
+            cmake.define("CMAKE_CUDA_ARCHITECTURES", "89-real;90-real;120");
             cmake.define(
                 "CUDA_NVCC_FLAGS",
                 format!(
